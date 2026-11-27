@@ -1,182 +1,154 @@
-# kitti_stereo_yolo_speed
+# AutoDrive Vision
 
-Projet PFE d'estimation de profondeur et de vitesse des objets routiers, à partir d'images stéréo KITTI.
+Projet de fin d’études d’estimation de la profondeur et de la vitesse des objets routiers depuis un véhicule en mouvement. Le pipeline traite des séquences KITTI Raw et produit des images annotées et des mesures par objet. Le dashboard Streamlit permet de parcourir ces résultats et de les comparer aux références KITTI.
 
-## Chaîne de traitement
+## Architecture actuelle
 
-```text
-KITTI Raw : image_02 (gauche) + image_03 (droite)
-                    ↓
-StereoSGBM + filtre WLS : carte de disparité
-                    ↓
-Profondeur : Z = (f × B) / disparité
-                    ↓
-YOLO11m : détection des objets
-                    ↓
-BoT-SORT + ReID : ID persistant par objet et compensation caméra
-                    ↓
-Profondeur robuste dans la bounding box
-                    ↓
-OXTS : mouvement de la caméra
-                    ↓
-Filtre de Kalman 3D
-                    ↓
-Vecteur vitesse 3D (Vx, Vy, Vz)
-                    ↓
-Images annotées, CSV et graphiques
-```
+| Étape | Méthode utilisée | Sortie |
+| --- | --- | --- |
+| Stéréo | Cartes FoundationStereo précalculées, ou StereoSGBM avec filtrage WLS | Disparité en pixels, puis profondeur métrique avec la calibration KITTI |
+| Détection et segmentation | YOLO11m-seg sur la caméra gauche | Boîtes, classes et masques d’instance |
+| Suivi | StrongSORT via BoxMOT avec réidentification OSNet | Identifiants de suivi |
+| Localisation | Profondeur robuste dans le masque, puis projection du centre de la boîte | Position 3D par objet. La mesure utilise une zone centrale de la boîte si le masque manque |
+| Mouvement | OXTS et filtre de Kalman 3D à bruit de mesure adaptatif | Vitesse relative, vitesse compensée et statut |
+| Consultation | Export CSV, images annotées et Streamlit | Lecture vidéo, courbes par piste et rapports d’évaluation |
 
-Le vecteur est exprimé dans le repère de la caméra rectifiée :
+Avec la **méthode A**, le pipeline compense la translation en ajoutant la vitesse OXTS du véhicule à la vitesse relative, dans les axes caméra. Avec la **méthode B** (`--world-kalman`), il transforme les positions selon la rotation et la translation de la caméra, puis estime la vitesse dans un repère local fixe. Le vecteur compensé est réexprimé dans les axes de la caméra courante pour l’export. Ce changement d’axes conserve la norme du vecteur.
 
-```text
-X : droite / gauche
-Y : bas / haut
-Z : avant / arrière
-V = (Vx, Vy, Vz) en m/s
-```
+## Installation sous Windows
 
-La norme `|V|` est la vitesse 3D totale, tandis que `Vz` est la composante avant/arrière. Le filtre de Kalman réduit le bruit de profondeur avant de calculer cette vitesse.
-
-## Jeu de données à utiliser
-
-Le projet est conçu et testé pour **KITTI Raw Data**, et plus précisément une séquence `synced+rectified data`.
-
-Téléchargez sur le site KITTI, pour la séquence voulue :
-
-1. **synced+rectified data** : obligatoire. Contient `image_02/data`, `image_03/data` et `oxts/data` ;
-2. **calibration** : obligatoire. Contient `calib_cam_to_cam.txt` ;
-3. **tracklets** : recommandé. Contient `tracklet_labels.xml` pour analyser et valider les objets, mais il n'est pas nécessaire à l'exécution ;
-4. **unsynced+unrectified data** : inutile pour ce projet ; ne le téléchargez pas.
-
-**Ne choisissez pas KITTI Object Detection pour le calcul de vitesse.** Il contient des images stéréo indépendantes, mais pas la séquence OXTS nécessaire au suivi temporel utilisé ici.
-
-Exemple de structure attendue :
-
-```text
-C:\BIG DATA\PFE\KITTI\
-└── 2011_09_26\
-    ├── calib_cam_to_cam.txt
-    └── 2011_09_26_drive_0005_sync\
-        ├── image_02\data\0000000000.png
-        ├── image_03\data\0000000000.png
-        ├── oxts\data\0000000000.txt
-        └── tracklet_labels.xml                 (recommandé)
-```
-
-## Installation
-
-Prérequis : Python 3.10 à 3.12 recommandé.
+Ouvrez PowerShell à la racine du projet cloné. Si l’environnement `.venv` existe déjà, réutilisez-le.
 
 ```powershell
-cd "C:\BIG DATA\PFE\kitti_stereo_yolo_speed"
 python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-Le modèle par défaut est **YOLO11m** : meilleur compromis précision/temps pour les petits objets et les classes proches. Au premier lancement, Ultralytics télécharge automatiquement `yolo11m.pt`. Avec un GPU NVIDIA puissant, vous pouvez remplacer ce modèle par `yolo11l.pt`.
+L’environnement local contient Python 3.13.2, BoxMOT 23.0.0, Ultralytics 8.4.131 et Streamlit 1.62.0. Les versions minimales des dépendances figurent dans [requirements.txt](requirements.txt). La configuration par défaut se trouve dans [config/default.yaml](config/default.yaml). Elle sélectionne `yolo11m-seg.pt` et le modèle ReID `osnet_x0_25_msmt17.pt` sur CPU. StereoSGBM/WLS nécessite les fonctions WLS du module `cv2.ximgproc` fourni par OpenCV contrib.
 
-Si votre PC est lent ou ne possède pas de GPU, changez dans `config/default.yaml` :
+## Préparer les séquences KITTI
 
-```yaml
-model: yolo11n.pt
-```
-
-## Lancer le pipeline complet
-
-```powershell
-python scripts\run_sequence.py `
-  --left-dir "C:\BIG DATA\PFE\KITTI\2011_09_26\2011_09_26_drive_0059_sync\image_02\data" `
-  --right-dir "C:\BIG DATA\PFE\KITTI\2011_09_26\2011_09_26_drive_0059_sync\image_03\data" `
-  --oxts-dir "C:\BIG DATA\PFE\KITTI\2011_09_26\2011_09_26_drive_0059_sync\oxts\data" `
-  --calib "C:\BIG DATA\PFE\KITTI\2011_09_26\calib_cam_to_cam.txt" `
-  --calib-imu-to-velo "C:\BIG DATA\PFE\KITTI\2011_09_26\calib_imu_to_velo.txt" `
-  --calib-velo-to-cam "C:\BIG DATA\PFE\KITTI\2011_09_26\calib_velo_to_cam.txt" `
-  --tracklets "C:\BIG DATA\PFE\KITTI\2011_09_26\2011_09_26_drive_0059_sync\tracklet_labels.xml" `
-  --max-frames 30 `
-  --output-dir "outputs\sequence_0059_zupt"
-```
-
-Utilisez `--max-frames 0` pour traiter toute la séquence. Commencez toujours par 30 images afin de vérifier l'installation.
-
-Les résultats sont enregistrés dans :
+Utilisez les archives KITTI Raw **synced+rectified**, les calibrations de la date et, pour la validation par objet, les annotations **tracklets**. Les deux séquences utilisées dans les comparaisons sont **0005** (154 paires) et **0014** (314 paires).
 
 ```text
-outputs\sequence_botsort\
-├── 0000000000.png                image annotée
-├── measurements.csv               mesures complètes
-├── speed_track_ID.png             graphique de vitesse
-└── distance_track_ID.png          graphique de distance
+C:\BIG DATA\PFE\KITTI\2011_09_26\
+├── calib_cam_to_cam.txt
+├── calib_imu_to_velo.txt
+├── calib_velo_to_cam.txt
+└── 2011_09_26_drive_0005_sync\
+    ├── image_02\data\0000000000.png
+    ├── image_03\data\0000000000.png
+    ├── oxts\data\0000000000.txt
+    ├── tracklet_labels.xml
+    └── velodyne_points\data\0000000000.bin
 ```
 
-## Créer les graphiques
+Les deux séquences du 26 septembre partagent les fichiers de calibration du dossier parent. Sélectionnez les images, les mesures OXTS et les tracklets du même trajet. Le script conserve les noms d’images à dix chiffres, par exemple `0000000000`.
 
-Après l'exécution :
+- Les fichiers `calib_imu_to_velo.txt` et `calib_velo_to_cam.txt` sont requis pour la méthode B.
+- Les tracklets sont facultatifs pour l’estimation. Leur projection pour la validation nécessite `calib_velo_to_cam.txt`.
+- Les scans `velodyne_points/data` servent à comparer les disparités au LiDAR projeté.
+- Les cartes FoundationStereo sont calculées hors du pipeline Python local. Chaque fichier NumPy `.npy` doit porter le même nom que l’image gauche, avoir ses dimensions et contenir une disparité en pixels à la résolution d’origine.
+
+## Lancer le pipeline
+
+Dans PowerShell, choisissez `0005` ou `0014` dans `$drive`. Exécutez ces blocs dans la même session, depuis la racine du projet.
 
 ```powershell
-python scripts\plot_results.py `
-  --csv "outputs\sequence_botsort\measurements.csv" `
-  --track-id 3
+$python = '.\.venv\Scripts\python.exe'
+$drive = '0005'
+$dateDir = 'C:\chemin\vers\KITTI\2011_09_26'
+$sequence = Join-Path $dateDir "2011_09_26_drive_${drive}_sync"
+$maps = "outputs\foundationstereo_kitti_${drive}\disparities"
+
+$common = @(
+    '--left-dir', "$sequence\image_02\data"
+    '--right-dir', "$sequence\image_03\data"
+    '--oxts-dir', "$sequence\oxts\data"
+    '--calib', "$dateDir\calib_cam_to_cam.txt"
+    '--calib-imu-to-velo', "$dateDir\calib_imu_to_velo.txt"
+    '--calib-velo-to-cam', "$dateDir\calib_velo_to_cam.txt"
+    '--tracklets', "$sequence\tracklet_labels.xml"
+)
 ```
 
-Omettez `--track-id 3` pour que le programme choisisse automatiquement l'ID avec le plus de vitesses acceptées.
-
-## Validation avec les annotations KITTI
-
-Si `tracklet_labels.xml` et `calib_velo_to_cam.txt` sont disponibles, ajoutez-les au lancement. Le projet projette alors les positions 3D de vérité terrain dans l'image gauche et compare la profondeur et la vitesse relative estimées.
+Adaptez `$dateDir` au dossier KITTI de votre machine. Retirez la ligne `--tracklets` du bloc si vous n’avez pas les annotations. Lancez un essai de 30 images avec StereoSGBM/WLS et la méthode B pour vérifier votre installation.
 
 ```powershell
-python scripts\run_sequence.py `
-  --left-dir "C:\BIG DATA\PFE\KITTI\2011_09_26\2011_09_26_drive_0005_sync\image_02\data" `
-  --right-dir "C:\BIG DATA\PFE\KITTI\2011_09_26\2011_09_26_drive_0005_sync\image_03\data" `
-  --oxts-dir "C:\BIG DATA\PFE\KITTI\2011_09_26\2011_09_26_drive_0005_sync\oxts\data" `
-  --calib "C:\BIG DATA\PFE\KITTI\2011_09_26\calib_cam_to_cam.txt" `
-  --tracklets "C:\BIG DATA\PFE\KITTI\2011_09_26\2011_09_26_drive_0005_sync\tracklet_labels.xml" `
-  --calib-imu-to-velo "C:\BIG DATA\PFE\KITTI\2011_09_26\calib_imu_to_velo.txt" `
-  --calib-velo-to-cam "C:\BIG DATA\PFE\KITTI\2011_09_26\calib_velo_to_cam.txt" `
-  --max-frames 30
-
-python scripts\report_validation.py `
-  --csv "outputs\sequence_botsort\measurements.csv"
+& $python scripts\run_sequence.py @common --world-kalman --max-frames 30 --output-dir "outputs\test_sgbm_${drive}_30"
 ```
 
-Le rapport affiche l'erreur absolue moyenne et la RMSE de profondeur, puis l'erreur de vitesse relative. Les vitesses monde ne sont pas validées directement : elles incluent la compensation OXTS de la voiture.
-
-## Filtre objets routiers mobiles
-
-Le fichier `config/default.yaml` définit une zone routière approximative et une vitesse monde minimale positive de `3 km/h`. Avec `require_forward_motion: true`, les objets quasi immobiles ou dont la vitesse monde est négative sont exclus des graphiques et de la sélection automatique. Ils restent dans le CSV brut pour préserver la traçabilité. Désactivez cette option si vous souhaitez analyser les véhicules venant en sens inverse.
-
-## Interpréter les résultats
-
-- `distance_m` : distance devant la caméra, en mètres ;
-- `relative_speed_km_h` : vitesse de l'objet par rapport à la voiture KITTI ;
-- `speed_3d_km_h` : norme de la vitesse monde 3D obtenue après Kalman et compensation OXTS ;
-- `world_vx_mps`, `world_vy_mps`, `world_vz_mps` : composantes du vecteur vitesse monde ;
-- `world_speed_km_h` : composante longitudinale `Vz` en km/h ;
-- `speed_reliability` : `high`, `medium`, `rejected` ou `waiting` ;
-- `waiting` : le même objet n'a pas encore été observé sur assez de frames ;
-- `rejected` : mesure écartée parce que la profondeur ou la régression est instable.
-
-Une valeur `high` garantit une bonne cohérence temporelle de la profondeur. Elle n'est pas une vérité terrain absolue : la profondeur stéréo devient moins précise pour les objets lointains, petits ou partiellement masqués.
-
-## Interface Streamlit
+Pour traiter le trajet complet avec FoundationStereo, placez les cartes exportées depuis Colab dans le dossier indiqué par `$maps`. Utilisez deux dossiers de sortie pour conserver les résultats de chaque méthode.
 
 ```powershell
-streamlit run app.py
+$foundationOut = "outputs\run_foundation_${drive}_methode_b"
+$sgbmOut = "outputs\run_sgbm_${drive}_methode_b"
+
+& $python scripts\run_sequence.py @common --world-kalman --foundation-disparity-dir $maps --max-frames 0 --output-dir $foundationOut
+& $python scripts\run_sequence.py @common --world-kalman --max-frames 0 --output-dir $sgbmOut
 ```
 
-L'interface sert à vérifier une seule paire d'images, sa disparité et sa profondeur. Le traitement professionnel des séquences, le tracking et la vitesse sont réalisés par `scripts/run_sequence.py`.
+Sans `--foundation-disparity-dir`, le script calcule la disparité avec StereoSGBM/WLS. Pour tester la méthode A, retirez `--world-kalman` et choisissez un autre dossier de sortie. `--max-frames 0` traite toutes les paires disponibles.
 
-## Vérifications
+## Dashboard AutoDrive Vision
 
 ```powershell
-python -m pytest tests -q
-python scripts\demo_synthetic.py
+.\.venv\Scripts\python.exe -m streamlit run app.py
 ```
 
-## Limites connues à présenter dans le rapport
+Dans la barre latérale, sélectionnez un dossier contenant `measurements.csv` et ses images annotées. Pour afficher les cartes FoundationStereo, renseignez **Dossier des cartes de disparité** avec le sous-dossier `disparities` du trajet et **Calibration KITTI** avec `calib_cam_to_cam.txt`.
 
-- Le vecteur vitesse est calculé dans le repère caméra courant. Une vitesse dans un repère monde GPS parfaitement fixe demanderait encore d'intégrer la pose complète (latitude, longitude, orientation) entre les frames.
-- YOLO peut confondre certaines classes. La stabilisation par vote sur l'historique ByteTrack réduit ces changements d'étiquette.
-- Une personne et un vélo peuvent être fusionnés en `cyclist` lorsqu'ils correspondent au même objet physique.
-- Les résultats les plus sensibles sont ceux d'objets lointains, très petits, occultés ou situés sur les bords de l'image.
+| Onglet | Fonction |
+| --- | --- |
+| Détection | Parcourir les images avec les boîtes, classes, IDs, profondeurs et vitesses disponibles |
+| Profondeur | Visualiser la carte métrique ou calculer la disparité d’une paire rectifiée avec le module stéréo local |
+| Séquence | Lire et télécharger la vidéo des images annotées. Le réglage d’images par seconde agit sur la lecture |
+| Suivi | Sélectionner un ID et examiner les courbes de profondeur et de vitesse |
+| Analyse | Consulter la validation sur les tracklets, télécharger le CSV et comparer les résultats stéréo sur le LiDAR projeté |
+
+Les dossiers `outputs/` de l’expérimentation restent sur la machine où les résultats ont été produits. Après avoir cloné le dépôt, lancez le pipeline pour générer des images et un CSV, ou récupérez ces fichiers séparément pour une démo. Le volet **Comparaison des modèles** lit les rapports `outputs/stereo_evaluation/kitti_*.json`. Pour consulter des cartes StereoSGBM/WLS dans le tableau de bord, renseignez le dossier de leurs `.npy` s’il vous a été fourni. Le traitement de séquence écrit les images annotées et le CSV.
+
+## Lire et évaluer les résultats
+
+Chaque traitement écrit des PNG annotés et un fichier `measurements.csv` séparé par des points-virgules. La vidéo est produite par le dashboard à la demande. Les graphiques peuvent aussi être créés avec [plot_results.py](scripts/plot_results.py).
+
+| Champ CSV | Signification |
+| --- | --- |
+| `distance_m` | Profondeur dans l’axe avant Z de la caméra, en mètres |
+| `relative_speed_km_h` | Composante longitudinale signée de la vitesse relative |
+| `world_speed_km_h` | Composante longitudinale signée de la vitesse compensée |
+| `world_vx_mps`, `world_vy_mps`, `world_vz_mps` | Composantes compensées en m/s, exprimées dans les axes caméra |
+| `speed_3d_km_h` et `speed_3d_raw_km_h` | Norme 3D affichée et norme brute avant la décision d’immobilité |
+| `speed_status` | `waiting` en attente, `accepted` accepté, `rejected` écarté ou `static` estimé immobile |
+| `analysis_eligible` et `analysis_reason` | Décision et motif du filtre de zone et de mouvement. Les lignes exclues restent dans le CSV |
+
+Un champ vide indique une valeur indisponible. Le niveau `high` indique une bonne cohérence selon les critères internes du filtre. La précision se mesure séparément avec une référence.
+
+```powershell
+$csv = Join-Path $foundationOut 'measurements.csv'
+& $python scripts\report_validation.py --csv $csv
+& $python scripts\evaluate_tracking.py --csv $csv --tracker StrongSORT
+& $python scripts\plot_results.py --csv $csv
+```
+
+[report_validation.py](scripts/report_validation.py) calcule la MAE et le RMSE de profondeur et de vitesse relative sur les observations retenues. [evaluate_tracking.py](scripts/evaluate_tracking.py) compte les changements d’ID, les interruptions et les fragments à partir des associations aux tracklets. Pour tracer une piste précise, ajoutez `--track-id` et son numéro à `plot_results.py`.
+
+[evaluate_stereo.py](scripts/evaluate_stereo.py) compare deux dossiers de disparités précalculées au LiDAR projeté. Il attend des fichiers `.npy` appariés pour les deux méthodes, passés par `--sgbm` et `--foundation`. Indiquez le dossier du trajet par `--sequence` et le chemin du rapport JSON par `--output`. Le rapport indique la proportion de pixels corrects (erreur inférieure à 3 px **ou** à 5 %), la couverture et l’erreur moyenne sur les pixels valides.
+
+### Résultats sur les séquences 0005 et 0014
+
+| Séquence | Pixels corrects sur le LiDAR, SGBM/WLS à FoundationStereo | MAE profondeur | MAE vitesse relative |
+| --- | --- | --- | --- |
+| 0005 | 71,91 % → 93,09 % | 1,07 m → 0,62 m (266 observations) | 1,60 km/h → 1,11 km/h (167 observations) |
+| 0014 | 72,55 % → 93,60 % | 2,02 m → 1,52 m (527 observations) | 3,46 km/h → 2,79 km/h (251 observations) |
+
+Le taux de pixels corrects couvre toutes les images du trajet et les pixels où le LiDAR fournit une référence. Les deux MAE comparent les méthodes sur les mêmes observations par objet.
+
+Pour la vitesse 3D brute sur la 0005, la MAE passe de **7,12 à 1,52 km/h** entre les méthodes A et B sur 497 observations. La référence reconstruite à partir des tracklets et la méthode B utilisent les mêmes poses OXTS.
+
+## Limites du prototype
+
+- Le calcul temporel utilise une cadence nominale de 10 Hz. Un décalage ou une image manquante peut fausser la vitesse.
+- La profondeur sous masque décrit une surface visible. La référence KITTI correspond à un point de l’objet annoté.
+- Les grandes distances, les occultations et les reprises d’identité peuvent produire des vitesses erronées.
+- Les poids FoundationStereo ont été affinés sur des groupes de frames des trajets étudiés. Une validation de généralisation demanderait un trajet indépendant.
