@@ -1,0 +1,14 @@
+[theme]
+base = "dark"
+primaryColor = "#3478e5"
+backgroundColor = "#090e18"
+secondaryBackgroundColor = "#121c2e"
+textColor = "#eef3fc"
+borderColor = "#28364d"
+linkColor = "#75c5ff"
+dataframeHeaderBackgroundColor = "#172338"
+font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+chartCategoricalColors = ["#55b9ff", "#53d9af", "#f5bb64", "#b39aff"]
+
+[client]
+toolbarMode = "minimal"

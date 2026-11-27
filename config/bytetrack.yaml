@@ -1,0 +1,23 @@
+tracker_type: bytetrack
+
+# Détections très confiantes :
+# elles initialisent ou mettent à jour un ID.
+track_high_thresh: 0.35
+
+# Détections moins confiantes :
+# elles peuvent conserver un ID existant,
+# mais ne créent pas un nouvel objet.
+track_low_thresh: 0.10
+
+# Confiance minimale pour créer un nouvel ID.
+new_track_thresh: 0.35
+
+# Nombre maximal de frames pendant lesquelles
+# un objet peut disparaître avant de perdre son ID.
+track_buffer: 30
+
+# Qualité minimale d'association entre deux frames.
+match_thresh: 0.80
+
+# Combine la confiance YOLO et la similitude des boîtes.
+fuse_score: true

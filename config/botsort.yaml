@@ -1,0 +1,19 @@
+tracker_type: botsort
+
+# Association entre les détections YOLO et les pistes existantes.
+track_high_thresh: 0.35
+track_low_thresh: 0.10
+new_track_thresh: 0.35
+track_buffer: 40
+match_thresh: 0.80
+fuse_score: true
+
+# BoT-SORT compense le mouvement global de la caméra embarquée.
+gmc_method: sparseOptFlow
+
+# ReID : utilise l'apparence de l'objet pour limiter les changements d'ID
+# lorsqu'un objet est brièvement masqué ou que plusieurs objets sont proches.
+with_reid: true
+model: auto
+proximity_thresh: 0.50
+appearance_thresh: 0.25
